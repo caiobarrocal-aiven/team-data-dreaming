@@ -955,12 +955,13 @@ function shapeExtent(sym, nx, ny) {
 
 const RAIN = {
   fontSize:    Math.round(44 * 0.70),   // 31 px
-  gravity:     0.22,
+  gravity:     0.26,                    // slightly stronger pull
   restitution: 0.13,
   friction:    0.78,
   minSpeed:    3.5,
   maxSpeed:    8.0,
   settleSpeed: 0.9,
+  angDamp:     0.965,                   // rotational friction per frame
   drops:       [],
   settled:     [],
   sgrid:       new Map(),
@@ -1010,6 +1011,8 @@ class RainDrop {
     this.settled = false;
     this.vx      = (Math.random() - 0.5) * 1.2;
     this.vy      = RAIN.minSpeed + Math.random() * (RAIN.maxSpeed - RAIN.minSpeed);
+    this.angle   = (Math.random() - 0.5) * 0.5;   // initial tilt (rad)
+    this.omega   = (Math.random() - 0.5) * 0.06;  // initial spin  (rad/frame)
 
     // Spawn position derived from actual glyph mask so the symbol enters
     // cleanly from the top without invisible padding.
@@ -1025,12 +1028,17 @@ class RainDrop {
     snowCtx.textAlign    = 'center';
     snowCtx.textBaseline = 'middle';
     const [r,g,b] = this.col;
-    snowCtx.fillStyle    = `rgb(${r},${g},${b})`;
-    snowCtx.fillText(this.symbol, this.x, this.y);
+    snowCtx.fillStyle = `rgb(${r},${g},${b})`;
+    // Bake the final resting angle into the snowpack canvas
+    snowCtx.save();
+    snowCtx.translate(this.x, this.y);
+    snowCtx.rotate(this.angle);
+    snowCtx.fillText(this.symbol, 0, 0);
+    snowCtx.restore();
   }
 
   settle() {
-    this.vx = 0; this.vy = 0;
+    this.vx = 0; this.vy = 0; this.omega = 0;
     this.settled = true;
     RAIN.settled.push(this);
     sgAdd(this);
@@ -1042,7 +1050,21 @@ class RainDrop {
     const W = fgCanvas.width, H = fgCanvas.height;
     const m = SMASK[this.symbol];
 
+    // ── Gravity + air drag + wind ─────────────────────────────────────────
     this.vy += RAIN.gravity;
+    // Mild air drag — prevents infinite acceleration; creates natural terminal velocity
+    this.vx *= 0.994;
+    this.vy  = Math.min(this.vy, RAIN.maxSpeed * 1.6); // cap terminal velocity
+    // Gentle sinusoidal wind — changes direction slowly, nudges drops sideways
+    const wind = Math.sin(performance.now() * 0.00028 + this.x * 0.002) * 0.055;
+    this.vx += wind;
+
+    // ── Rotation — sideways velocity generates angular torque ─────────────
+    // A drop drifting right spins clockwise; drifting left spins anticlockwise.
+    this.omega += this.vx * 0.0045;
+    this.omega *= RAIN.angDamp;
+    this.angle += this.omega;
+
     let nx = this.x + this.vx;
     let ny = this.y + this.vy;
 
@@ -1050,8 +1072,10 @@ class RainDrop {
     const mL = m ? m.left   : -14;
     const mR = m ? m.right  :  14;
     const mB = m ? m.bottom :  14;
-    if (nx + mL < 0)     { nx = -mL;       this.vx =  Math.abs(this.vx) * 0.4; }
-    if (nx + mR > W - 1) { nx = W - 1 - mR; this.vx = -Math.abs(this.vx) * 0.4; }
+    if (nx + mL < 0)     { nx = -mL;        this.vx =  Math.abs(this.vx) * 0.4;
+                           this.omega -= this.vy * 0.008; } // wall gives spin kick
+    if (nx + mR > W - 1) { nx = W - 1 - mR; this.vx = -Math.abs(this.vx) * 0.4;
+                           this.omega += this.vy * 0.008; }
 
     // ── Collide with settled snowpack (pixel-perfect) ────────────────────
     let touched = false;
@@ -1075,6 +1099,9 @@ class RainDrop {
       if (dot < 0) {
         this.vx = (this.vx - (1 + RAIN.restitution) * dot * cnx) * RAIN.friction;
         this.vy = (this.vy - (1 + RAIN.restitution) * dot * cny) * RAIN.friction;
+        // Tangential velocity component → angular kick (glancing blow spins the symbol)
+        const tang = this.vx * (-cny) + this.vy * cnx;
+        this.omega += tang * 0.012;
       }
       touched = true;
     }
@@ -1084,6 +1111,8 @@ class RainDrop {
     if (ny >= floor) {
       ny = floor;
       this.vy = -Math.abs(this.vy) * RAIN.restitution;
+      // Horizontal velocity at landing creates a rolling/skidding spin
+      this.omega += this.vx * 0.018;
       this.vx *= RAIN.friction;
       touched  = true;
     }
@@ -1126,6 +1155,10 @@ function resolveDropCollisions() {
         q.vx += imp * nx; q.vy += imp * ny;
         p.vx *= RAIN.friction; p.vy *= RAIN.friction;
         q.vx *= RAIN.friction; q.vy *= RAIN.friction;
+        // Tangential component of the impulse → spin kick on both bodies
+        const tang = imp * 0.014;
+        p.omega -= tang * (p.vx * (-ny) + p.vy * nx);
+        q.omega += tang * (q.vx * (-ny) + q.vy * nx);
       }
     }
   }
@@ -1154,7 +1187,12 @@ function drawRain() {
     } else {
       const [r,g,b] = d.col;
       ctx.fillStyle = `rgb(${r},${g},${b})`;
-      ctx.fillText(d.symbol, d.x, d.y);
+      // Draw at current rotation angle
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      ctx.rotate(d.angle);
+      ctx.fillText(d.symbol, 0, 0);
+      ctx.restore();
     }
   }
 }

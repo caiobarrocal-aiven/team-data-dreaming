@@ -828,30 +828,118 @@ function drawGrid() {
 }
 
 // ═══════════════════════════════════════════════════ RAIN (STYLE 3) ══
-// Full 2-D rigid-body snow simulation.
+// Full 2-D rigid-body snow simulation with pixel-perfect collision.
 //
-//  • Each service event spawns one symbol falling from a random X.
-//  • Gravity + slight horizontal drift during fall.
-//  • Falling symbols collide with each other (elastic, damped).
-//  • When a symbol's speed drops below the settle threshold it becomes
-//    part of the permanent snowpack.
-//  • Settled symbols are blitted from an offscreen canvas — O(1) per
-//    frame regardless of pile size.
-//  • A spatial hash grid makes settled-collision lookup O(1).
+//  • Each symbol is pre-rendered to a Uint8Array pixel mask so collision
+//    tests use the actual inked shape — no padding, no bounding circles.
+//  • AABB broad phase → pixel mask narrow phase for all collisions.
+//  • Contact normals and push-out use projected half-extents along the
+//    center-to-center axis (standard physics approximation).
+//  • Settled symbols are blitted from an offscreen canvas — O(1) per frame.
+//  • Spatial hash makes settled-vs-falling lookup O(1).
+
+// ── Per-symbol pixel masks ────────────────────────────────────────────────────
+// SMASK[char] = { mask:Uint8Array, w, h, cx, cy, left, right, top, bottom }
+// cx/cy  = mask-canvas coords of the character centre (= canvas centre)
+// left/right/top/bottom = tight-bbox offsets from character centre (px)
+const SMASK = {};
+
+function buildSymbolMasks() {
+  const fs = RAIN.fontSize;
+  const cw = Math.round(fs * 2.4); // generous canvas — fits all glyphs
+  const ch = Math.round(fs * 2.4);
+  const cx = cw / 2, cy = ch / 2;
+
+  const oc = document.createElement('canvas');
+  oc.width = cw; oc.height = ch;
+  const octx = oc.getContext('2d');
+
+  const syms = new Set([...Object.values(SERVICE_SYMBOL), '*']);
+  for (const sym of syms) {
+    octx.clearRect(0, 0, cw, ch);
+    octx.font         = `300 ${fs}px "Geist Mono","Courier New",monospace`;
+    octx.textAlign    = 'center';
+    octx.textBaseline = 'middle';
+    octx.fillStyle    = '#fff';
+    octx.fillText(sym, cx, cy);
+
+    const img  = octx.getImageData(0, 0, cw, ch).data;
+    const mask = new Uint8Array(cw * ch);
+    let minX = cw, maxX = 0, minY = ch, maxY = 0;
+
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        if (img[(y * cw + x) * 4 + 3] > 28) {
+          mask[y * cw + x] = 1;
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (maxX === 0) { minX = cx-8; maxX = cx+8; minY = cy-12; maxY = cy+12; }
+
+    SMASK[sym] = {
+      mask, w: cw, h: ch, cx, cy,
+      left:   minX - cx,   // ≤ 0 — leftmost ink from centre
+      right:  maxX - cx,   // ≥ 0 — rightmost ink from centre
+      top:    minY - cy,   // ≤ 0 — topmost ink from centre
+      bottom: maxY - cy,   // ≥ 0 — bottommost ink from centre
+    };
+  }
+}
+
+// ── Pixel-perfect overlap test ────────────────────────────────────────────────
+// Returns true if any inked pixel of drop a overlaps an inked pixel of drop b.
+// Uses tight AABB broad phase, then pixel mask narrow phase.
+function pixelOverlap(a, b) {
+  const ma = SMASK[a.symbol], mb = SMASK[b.symbol];
+  if (!ma || !mb) return Math.hypot(b.x - a.x, b.y - a.y) < 22; // fallback
+
+  // Screen-space tight AABBs
+  const aL = Math.floor(a.x + ma.left),  aR = Math.ceil(a.x + ma.right);
+  const aT = Math.floor(a.y + ma.top),   aB = Math.ceil(a.y + ma.bottom);
+  const bL = Math.floor(b.x + mb.left),  bR = Math.ceil(b.x + mb.right);
+  const bT = Math.floor(b.y + mb.top),   bB = Math.ceil(b.y + mb.bottom);
+  if (aR < bL || bR < aL || aB < bT || bB < aT) return false;
+
+  // Pixel mask in intersection region
+  const oL = Math.max(aL, bL), oR = Math.min(aR, bR);
+  const oT = Math.max(aT, bT), oB = Math.min(aB, bB);
+  for (let sy = oT; sy <= oB; sy++) {
+    for (let sx = oL; sx <= oR; sx++) {
+      const amx = Math.round(sx - a.x + ma.cx);
+      const amy = Math.round(sy - a.y + ma.cy);
+      if (amx < 0 || amx >= ma.w || amy < 0 || amy >= ma.h) continue;
+      if (!ma.mask[amy * ma.w + amx]) continue;
+      const bmx = Math.round(sx - b.x + mb.cx);
+      const bmy = Math.round(sy - b.y + mb.cy);
+      if (bmx < 0 || bmx >= mb.w || bmy < 0 || bmy >= mb.h) continue;
+      if (mb.mask[bmy * mb.w + bmx]) return true;
+    }
+  }
+  return false;
+}
+
+// ── Compute push-out extent along a unit normal for one shape ─────────────────
+function shapeExtent(sym, nx, ny) {
+  const m = SMASK[sym];
+  if (!m) return 14;
+  return Math.abs(nx) * Math.max(-m.left, m.right)
+       + Math.abs(ny) * Math.max(-m.top,  m.bottom);
+}
 
 const RAIN = {
   fontSize:    Math.round(44 * 0.70),   // 31 px
-  radius:      Math.round(44 * 0.70 * 0.50),  // collision radius ~15 px
   gravity:     0.22,
-  restitution: 0.13,   // near-zero bounce → snow, not rubber
-  friction:    0.78,   // horizontal damping on contact
+  restitution: 0.13,
+  friction:    0.78,
   minSpeed:    3.5,
   maxSpeed:    8.0,
-  settleSpeed: 0.9,    // px/frame below which a drop settles
-  drops:       [],     // active (airborne) drops
-  settled:     [],     // settled drops (physics bodies, never removed)
+  settleSpeed: 0.9,
+  drops:       [],
+  settled:     [],
   sgrid:       new Map(),
-  sgridSize:   Math.round(44 * 0.70 * 1.6),   // ≈ 1.6 × fontSize
+  sgridSize:   Math.round(44 * 0.70 * 1.8), // search cell ≈ 1.8 × fontSize
 };
 
 // Offscreen canvas for the snowpack — drawn once per settle, blitted cheaply
@@ -892,25 +980,27 @@ function sgNearby(x, y) {
 // ── RainDrop ─────────────────────────────────────────────────────────────────
 class RainDrop {
   constructor(stype, rgb) {
-    const r = RAIN.radius;
     this.symbol  = SERVICE_SYMBOL[stype] || '*';
     this.col     = rgb;
-    this.r       = r;
-    this.x       = r * 2 + Math.random() * (fgCanvas.width  - r * 4);
-    this.y       = -r;
+    this.settled = false;
     this.vx      = (Math.random() - 0.5) * 1.2;
     this.vy      = RAIN.minSpeed + Math.random() * (RAIN.maxSpeed - RAIN.minSpeed);
-    this.settled = false;
+
+    // Spawn position derived from actual glyph mask so the symbol enters
+    // cleanly from the top without invisible padding.
+    const m  = SMASK[this.symbol];
+    const hw = m ? Math.max(-m.left, m.right) : 14;
+    this.x   = hw + Math.random() * (fgCanvas.width - hw * 2);
+    this.y   = m ? -(Math.abs(m.top) + 2) : -16;
   }
 
-  // Paint this symbol onto the persistent snowpack canvas
   paintSnow() {
     const fs = RAIN.fontSize;
     snowCtx.font         = `300 ${fs}px "Geist Mono","Courier New",monospace`;
     snowCtx.textAlign    = 'center';
     snowCtx.textBaseline = 'middle';
     const [r,g,b] = this.col;
-    snowCtx.fillStyle = `rgb(${r},${g},${b})`;
+    snowCtx.fillStyle    = `rgb(${r},${g},${b})`;
     snowCtx.fillText(this.symbol, this.x, this.y);
   }
 
@@ -924,81 +1014,93 @@ class RainDrop {
 
   update() {
     if (this.settled) return;
-    const r = this.r, W = fgCanvas.width, H = fgCanvas.height;
+    const W = fgCanvas.width, H = fgCanvas.height;
+    const m = SMASK[this.symbol];
 
     this.vy += RAIN.gravity;
     let nx = this.x + this.vx;
     let ny = this.y + this.vy;
 
-    // ── Side walls ───────────────────────────────────────────────────────
-    if (nx < r)     { nx = r;     this.vx =  Math.abs(this.vx) * 0.4; }
-    if (nx > W - r) { nx = W - r; this.vx = -Math.abs(this.vx) * 0.4; }
+    // ── Side walls — use exact ink bounds ────────────────────────────────
+    const mL = m ? m.left   : -14;
+    const mR = m ? m.right  :  14;
+    const mB = m ? m.bottom :  14;
+    if (nx + mL < 0)     { nx = -mL;       this.vx =  Math.abs(this.vx) * 0.4; }
+    if (nx + mR > W - 1) { nx = W - 1 - mR; this.vx = -Math.abs(this.vx) * 0.4; }
 
-    // ── Collide with settled snowpack ────────────────────────────────────
+    // ── Collide with settled snowpack (pixel-perfect) ────────────────────
     let touched = false;
+    const probe = { x: nx, y: ny, symbol: this.symbol };
     for (const s of sgNearby(nx, ny)) {
+      if (!pixelOverlap(probe, s)) continue;
+
+      // Contact normal: centre-to-centre unit vector
       const dx = nx - s.x, dy = ny - s.y;
-      const d  = Math.sqrt(dx*dx + dy*dy);
-      const md = r + s.r;
-      if (d < md && d > 0.01) {
-        const nx_ = dx/d, ny_ = dy/d;
-        // Push out of overlap
-        nx = s.x + nx_ * md * 1.005;
-        ny = s.y + ny_ * md * 1.005;
-        // Reflect & damp velocity along contact normal
-        const dot = this.vx * nx_ + this.vy * ny_;
-        if (dot < 0) {
-          this.vx = (this.vx - (1+RAIN.restitution)*dot*nx_) * RAIN.friction;
-          this.vy = (this.vy - (1+RAIN.restitution)*dot*ny_) * RAIN.friction;
-        }
-        touched = true;
+      const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+      const cnx = dx / d, cny = dy / d;
+
+      // Push out just enough to clear the pixel shapes
+      const myExt = shapeExtent(this.symbol, cnx, cny);
+      const sExt  = shapeExtent(s.symbol,    cnx, cny);
+      nx = s.x + cnx * (myExt + sExt) * 1.01;
+      ny = s.y + cny * (myExt + sExt) * 1.01;
+      probe.x = nx; probe.y = ny;
+
+      const dot = this.vx * cnx + this.vy * cny;
+      if (dot < 0) {
+        this.vx = (this.vx - (1 + RAIN.restitution) * dot * cnx) * RAIN.friction;
+        this.vy = (this.vy - (1 + RAIN.restitution) * dot * cny) * RAIN.friction;
       }
+      touched = true;
     }
 
-    // ── Floor ────────────────────────────────────────────────────────────
-    const floor = H - r;
+    // ── Floor — land on exact bottom ink edge ────────────────────────────
+    const floor = H - 1 - mB;
     if (ny >= floor) {
       ny = floor;
       this.vy = -Math.abs(this.vy) * RAIN.restitution;
       this.vx *= RAIN.friction;
-      touched = true;
+      touched  = true;
     }
 
     this.x = nx; this.y = ny;
 
-    // ── Settle when nearly still ─────────────────────────────────────────
-    if (touched) {
-      const spd = Math.sqrt(this.vx*this.vx + this.vy*this.vy);
-      if (spd < RAIN.settleSpeed) this.settle();
-    }
+    if (touched && Math.hypot(this.vx, this.vy) < RAIN.settleSpeed) this.settle();
   }
 }
 
-// ── Falling-vs-falling collision ──────────────────────────────────────────────
+// ── Falling-vs-falling collision (pixel-perfect) ──────────────────────────────
 function resolveDropCollisions() {
-  const a = RAIN.drops;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i].settled) continue;
-    for (let j = i+1; j < a.length; j++) {
-      if (a[j].settled) continue;
-      const p = a[i], q = a[j];
+  const drops = RAIN.drops;
+  for (let i = 0; i < drops.length; i++) {
+    if (drops[i].settled) continue;
+    for (let j = i + 1; j < drops.length; j++) {
+      if (drops[j].settled) continue;
+      const p = drops[i], q = drops[j];
+
+      if (!pixelOverlap(p, q)) continue;
+
+      // Contact normal: centre-to-centre unit vector
       const dx = q.x - p.x, dy = q.y - p.y;
-      const d  = Math.sqrt(dx*dx + dy*dy);
-      const md = p.r + q.r;
-      if (d < md && d > 0.01) {
-        const nx = dx/d, ny = dy/d;
-        const ov = (md - d) * 0.5;
-        p.x -= nx*ov; p.y -= ny*ov;
-        q.x += nx*ov; q.y += ny*ov;
-        const rv = (p.vx-q.vx)*nx + (p.vy-q.vy)*ny;
-        if (rv > 0) {
-          const imp = rv * (1+RAIN.restitution) * 0.5;
-          p.vx -= imp*nx; p.vy -= imp*ny;
-          q.vx += imp*nx; q.vy += imp*ny;
-          // Damp after collision
-          p.vx *= RAIN.friction; p.vy *= RAIN.friction;
-          q.vx *= RAIN.friction; q.vy *= RAIN.friction;
-        }
+      const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+      const nx = dx / d, ny = dy / d;
+
+      // Push each body out by their projected half-extent along the normal
+      const pExt = shapeExtent(p.symbol, nx, ny);
+      const qExt = shapeExtent(q.symbol, nx, ny);
+      const gap  = (pExt + qExt - d) * 0.5 + 0.5; // +0.5 px safety margin
+      if (gap <= 0) continue;
+      p.x -= nx * gap; p.y -= ny * gap;
+      q.x += nx * gap; q.y += ny * gap;
+
+      // Impulse along normal
+      const rv = (p.vx - q.vx) * nx + (p.vy - q.vy) * ny;
+      if (rv > 0) {
+        const imp = rv * (1 + RAIN.restitution) * 0.5;
+        p.vx -= imp * nx; p.vy -= imp * ny;
+        q.vx += imp * nx; q.vy += imp * ny;
+        p.vx *= RAIN.friction; p.vy *= RAIN.friction;
+        q.vx *= RAIN.friction; q.vy *= RAIN.friction;
       }
     }
   }
@@ -1208,6 +1310,9 @@ resize();
 window.addEventListener('resize',resize);
 connectSSE();
 frame();
+// Build pixel masks once the Geist Mono font is ready so measurements
+// reflect the actual glyph shapes, not a fallback font.
+document.fonts.ready.then(() => buildSymbolMasks());
 </script>
 </body>
 </html>

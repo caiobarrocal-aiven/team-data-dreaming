@@ -249,15 +249,15 @@ void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
 precision highp float;
 uniform vec2  u_res;
 uniform float u_time;
-uniform vec3  u_col1;   // primary service color  — drives lit surfaces & peaks
-uniform vec3  u_col2;   // secondary service color — drives atmosphere & shadows
+uniform vec3  u_col1;   // primary service color  — lit surfaces & peaks
+uniform vec3  u_col2;   // secondary service color — atmosphere & shadows
 uniform float u_warp;
 uniform float u_beat;
 uniform float u_error;
 uniform float u_speed;
-uniform float u_freq;   // unused in this shader, kept for API compatibility
+uniform float u_freq;   // kept for API compatibility
 
-// ── Noise ────────────────────────────────────────────────────────────
+// ── Gradient noise ────────────────────────────────────────────────────
 vec2 hash2(vec2 p){
   p=vec2(dot(p,vec2(127.1,311.7)),dot(p,vec2(269.5,183.3)));
   return fract(sin(p)*43758.5453)*2.0-1.0;
@@ -271,6 +271,8 @@ float gnoise(vec2 p){
                  dot(hash2(i+vec2(1,1)),f-vec2(1,1)),u.x),u.y);
 }
 mat2 rot2(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
+
+// Standard FBM — smooth rolling terrain
 float fbm(vec2 p,int oct){
   float v=0.0,a=0.52; mat2 R=rot2(0.42);
   for(int i=0;i<9;i++){
@@ -280,68 +282,125 @@ float fbm(vec2 p,int oct){
   return v;
 }
 
-// ── Triple-domain warp — produces the large folded-fabric forms ───────
-float terrain(vec2 uv,float t,float ws){
-  // First warp pass
-  vec2 q;
-  q.x=fbm(uv              +t*0.030,4);
-  q.y=fbm(uv+vec2(5.2,1.3)+t*0.024,4);
-  // Second warp pass — warped by q
-  vec2 r;
-  r.x=fbm(uv+ws*q+vec2(1.70,9.20)+t*0.018,6);
-  r.y=fbm(uv+ws*q+vec2(8.30,2.80)+t*0.013,6);
-  // Third pass — warped by r, extra detail
-  vec2 s2;
-  s2.x=fbm(uv+ws*0.9*r+vec2(3.10,5.40)+t*0.010,5);
-  s2.y=fbm(uv+ws*0.9*r+vec2(7.60,1.90)+t*0.008,5);
-  return fbm(uv+ws*1.2*s2,9);
+// Ridged FBM — inverted absolute-value per octave → sharp bright crests
+float rfbm(vec2 p,int oct){
+  float v=0.0,a=0.48; mat2 R=rot2(0.42);
+  for(int i=0;i<7;i++){
+    if(i>=oct)break;
+    v+=a*(1.0-abs(gnoise(p))); p=R*p*2.03+vec2(73.1); a*=0.52;
+  }
+  return v;
 }
 
 void main(){
   vec2 uv=gl_FragCoord.xy/u_res;
   uv.x*=u_res.x/u_res.y;
-
   float t =u_time*u_speed;
-  // Warp strength: much stronger than before → dramatic folded shapes
   float ws=3.2+u_warp*7.0;
 
-  float f =terrain(uv,t,ws);
+  // ── Domain warping: f(p) = f(p + f(p + f(p))) ────────────────────────
+  // Each pass re-displaces the coordinate using the previous pass's output,
+  // creating deeply folded, self-similar structures impossible with plain FBM.
+
+  // Pass 1 — f(p): base warp field, also seeds CA direction below
+  vec2 q;
+  q.x=fbm(uv              +t*0.030,4);
+  q.y=fbm(uv+vec2(5.2,1.3)+t*0.024,4);
+
+  // Pass 2 — f(p + f(p))
+  vec2 r;
+  r.x=fbm(uv+ws*q+vec2(1.70,9.20)+t*0.018,6);
+  r.y=fbm(uv+ws*q+vec2(8.30,2.80)+t*0.013,6);
+
+  // Pass 3 — f(p + f(p + f(p)))
+  vec2 dw;
+  dw.x=fbm(uv+ws*0.9*r+vec2(3.10,5.40)+t*0.010,5);
+  dw.y=fbm(uv+ws*0.9*r+vec2(7.60,1.90)+t*0.008,5);
+
+  vec2 wUV=uv+ws*1.2*dw;
+  float f=fbm(wUV,9);
+
+  // ── Surface normal via central differences ────────────────────────────
+  // Two additional samples at +eps give us df/dx and df/dy.
+  // From the implicit surface z = f(x,y) the outward normal is
+  // normalize(-dfdx, -dfdy, 1).  Slope magnitude and direction are then
+  // used to tint each surface patch with its own palette shift.
+  const float eps=0.005;
+  float fx=fbm(wUV+vec2(eps,0.0),9);
+  float fy=fbm(wUV+vec2(0.0,eps),9);
+  vec2  grad=vec2(fx-f,fy-f)/eps;
+  vec3  nrm=normalize(vec3(-grad*0.38,1.0));
+
+  // ── Lighting ──────────────────────────────────────────────────────────
+  vec3  lDir   =normalize(vec3(0.55,0.75,1.2));
+  float diffuse=clamp(dot(nrm,lDir),0.0,1.0);
+  float spec   =pow(clamp(dot(reflect(-lDir,nrm),vec3(0,0,1)),0.0,1.0),28.0);
+  // Fresnel: surfaces tilted away from camera catch a metallic rim glow
+  float fresnel=pow(1.0-clamp(nrm.z,0.0,1.0),2.4);
+
+  // ── Contrast curve ────────────────────────────────────────────────────
   float ft=clamp(f*0.5+0.5,0.0,1.0);
+  ft=clamp((ft-0.5)*2.6+0.5,0.0,1.0);
+  ft=pow(ft,0.80);
 
-  // ── Contrast curve — spread darks down, lights up ────────────────────
-  // Remaps the clustered mid-range FBM output into a full 0→1 sweep.
-  ft = clamp((ft - 0.5) * 2.6 + 0.5, 0.0, 1.0);
-  // Gamma-style lift: extra push in the shadows
-  ft = pow(ft, 0.80);
+  // ── Normal-driven palette ─────────────────────────────────────────────
+  // nrm.x (left/right slope) interpolates between the two brand hues so
+  // opposing faces carry complementary tones — the scene reads as 3D even
+  // without explicit shading.
+  // nrm.y (forward/back tilt) adds a warm/cool temperature shift on top.
+  float nS=nrm.x*0.5+0.5;
+  float nT=clamp(nrm.y*0.5+0.5,0.0,1.0);
 
-  // ── 5-stop color gradient ────────────────────────────────────────────
-  // deep shadow → atmospheric blue → form → lit surface → bright peak
-  vec3 c_shadow = mix(vec3(0.01,0.01,0.03), u_col2*0.08, 0.4);
-  vec3 c_atmos  = u_col2 * 0.55;
-  vec3 c_form   = mix(u_col2, u_col1, 0.42);
-  vec3 c_lit    = u_col1 * 1.15;
-  vec3 c_peak   = mix(u_col1, vec3(0.96,0.96,1.00), 0.72);
+  vec3 c_shadow=mix(vec3(0.01,0.01,0.03),u_col2*0.08,0.4);
+  vec3 c_atmos =mix(u_col2*0.55, u_col1*0.22, nS*0.45);
+  vec3 c_form  =mix(u_col2,      u_col1,      0.42+nS*0.28);
+  vec3 c_lit   =mix(u_col1*1.15, u_col2*0.9+u_col1*0.3, nT*0.35);
+  vec3 c_peak  =mix(u_col1,      vec3(0.96,0.96,1.00),  0.72-nS*0.18);
 
-  const float s0=0.16, s1=0.36, s2=0.58, s3=0.80;
+  const float s0=0.16,s1=0.36,s2=0.58,s3=0.80;
   vec3 col;
-  if     (ft<s0) col=mix(c_shadow, c_atmos, ft/s0);
-  else if(ft<s1) col=mix(c_atmos,  c_form,  (ft-s0)/(s1-s0));
-  else if(ft<s2) col=mix(c_form,   c_lit,   (ft-s1)/(s2-s1));
-  else if(ft<s3) col=mix(c_lit,    c_peak,  (ft-s2)/(s3-s2));
-  else           col=mix(c_peak,   vec3(1.0),(ft-s3)/(1.0-s3));
+  if     (ft<s0) col=mix(c_shadow,c_atmos,ft/s0);
+  else if(ft<s1) col=mix(c_atmos, c_form, (ft-s0)/(s1-s0));
+  else if(ft<s2) col=mix(c_form,  c_lit,  (ft-s1)/(s2-s1));
+  else if(ft<s3) col=mix(c_lit,   c_peak, (ft-s2)/(s3-s2));
+  else           col=mix(c_peak,  vec3(1.0),(ft-s3)/(1.0-s3));
 
-  // ── Beat — brief surge of brightness on event ────────────────────────
-  col += u_beat * 0.25 * c_peak * smoothstep(0.48,1.0,ft);
+  // ── Diffuse + specular + Fresnel rim ─────────────────────────────────
+  col=col*(0.52+0.48*diffuse);
+  col+=spec   *c_peak*(0.42+u_beat*0.38);
+  col+=fresnel*mix(c_peak,u_col2,0.30)*0.22;
 
-  // ── Error wash ───────────────────────────────────────────────────────
+  // ── Ridged energy contour lines ───────────────────────────────────────
+  // rfbm crests are sliced into glowing bands via smoothstep.
+  // Line width narrows on beat for a pulsing energy-surge effect.
+  float ridge=rfbm(wUV*1.9+t*0.004,5);
+  float edgeW=mix(0.095,0.018,u_beat);
+  float contour=abs(fract(ft*6.5+0.5)-0.5)*2.0;
+  float lineMask=(1.0-smoothstep(0.0,edgeW,contour))*clamp(ridge,0.0,1.0);
+  col+=lineMask*c_peak*0.24*(1.0+u_beat*0.65);
+
+  // ── Chromatic aberration ──────────────────────────────────────────────
+  // R and B channels are sampled at wUV displaced along the Pass-1 warp
+  // gradient direction, simulating light dispersion through the "medium".
+  // The split widens on beat, flaring like a lens catching bright light.
+  vec2 caDir=normalize(q+0.001)*(0.006+u_beat*0.014);
+  float fR=clamp((fbm(wUV+caDir,5)*0.5+0.5-0.5)*2.6+0.5,0.0,1.0);
+  float fB=clamp((fbm(wUV-caDir,5)*0.5+0.5-0.5)*2.6+0.5,0.0,1.0);
+  col.r=mix(col.r,pow(fR,0.80)*c_peak.r,0.15+u_beat*0.07);
+  col.b=mix(col.b,pow(fB,0.80)*c_peak.b,0.15+u_beat*0.07);
+
+  // ── Beat flash ────────────────────────────────────────────────────────
+  col+=u_beat*0.25*c_peak*smoothstep(0.48,1.0,ft);
+
+  // ── Error wash ────────────────────────────────────────────────────────
   vec3 errRed=vec3(0.97,0.32,0.29);
   col=mix(col,mix(col,errRed,0.55),u_error*0.40*(1.0-smoothstep(0.0,0.38,ft)));
 
-  // ── Organic grain — sandy/dusty texture ─────────────────────────────
+  // ── Organic grain ─────────────────────────────────────────────────────
   float grain=gnoise(uv*58.0+t*0.35)*0.065;
   col=clamp(col+vec3(grain),0.0,1.0);
 
-  // ── Soft vignette ────────────────────────────────────────────────────
+  // ── Soft vignette ─────────────────────────────────────────────────────
   vec2 vig=(gl_FragCoord.xy/u_res)*2.0-1.0;
   col*=1.0-smoothstep(0.42,1.55,length(vig*vec2(0.82,1.0)));
 

@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aiven — Data Signal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; font-family: 'Geist Mono', 'Helvetica Neue', monospace; }
+  canvas { position: fixed; top: 0; left: 0; }
+  #gl { z-index: 1; }
+  #fg { z-index: 2; }
+
+  /* ── HUD ──────────────────────────────────────────────────────────── */
+  #hud {
+    position: fixed; inset: 0; z-index: 3;
+    pointer-events: none;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    color: rgba(255,255,255,0.45);
+  }
+  #title {
+    position: absolute; top: 30px; left: 38px;
+    font-size: 9px; letter-spacing: 4px; text-transform: uppercase;
+  }
+  #title span {
+    display: block; font-size: 15px; letter-spacing: 6px; font-weight: 200;
+    color: rgba(255,255,255,0.75); margin-top: 5px;
+  }
+  #status-dot {
+    position: absolute; top: 38px; right: 260px;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: rgba(255,255,255,0.15); transition: background 0.5s;
+  }
+  #status-dot.live  { background: #5FFA74; box-shadow: 0 0 8px #5FFA74; }
+  #status-dot.error { background: #F85149; }
+  #legend {
+    position: absolute; bottom: 34px; left: 38px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .lr { display: flex; align-items: center; gap: 9px;
+        font-size: 9px; letter-spacing: 2.5px; text-transform: uppercase; }
+  .ld { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  #stats {
+    position: absolute; bottom: 34px; right: 260px;
+    text-align: right; font-size: 9px; letter-spacing: 2px;
+    text-transform: uppercase; line-height: 2;
+  }
+  #stats .big {
+    display: block; font-size: 22px; font-weight: 200;
+    letter-spacing: 1px; color: rgba(255,255,255,0.65);
+  }
+  #zones { display: none; }  /* hidden — terrain speaks for itself */
+
+  /* ── CONTROL PANEL ────────────────────────────────────────────────── */
+  #ctrl-wrap {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    z-index: 10; display: flex; align-items: stretch;
+    pointer-events: none;
+  }
+
+  /* Thin toggle tab */
+  #ctrl-tab {
+    pointer-events: all; cursor: pointer;
+    width: 22px;
+    background: rgba(10,10,14,0.55);
+    border-left: 1px solid rgba(255,255,255,0.06);
+    display: flex; align-items: center; justify-content: center;
+    writing-mode: vertical-rl;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-size: 8px; letter-spacing: 4px; text-transform: uppercase;
+    color: rgba(255,255,255,0.25);
+    transition: color 0.2s, background 0.2s;
+    user-select: none;
+  }
+  #ctrl-tab:hover { color: rgba(255,255,255,0.6); background: rgba(10,10,14,0.8); }
+
+  /* Sliding panel */
+  #ctrl-panel {
+    pointer-events: all;
+    width: 220px;
+    background: rgba(8,8,12,0.82);
+    backdrop-filter: blur(18px);
+    border-left: 1px solid rgba(255,255,255,0.07);
+    padding: 28px 22px;
+    display: flex; flex-direction: column; gap: 22px;
+    overflow-y: auto;
+    transform: translateX(100%);
+    transition: transform 0.35s cubic-bezier(.4,0,.2,1);
+  }
+  #ctrl-panel.open { transform: translateX(0); }
+
+  .ctrl-group { display: flex; flex-direction: column; gap: 10px; }
+
+  .ctrl-group h3 {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-size: 8px; letter-spacing: 3px; text-transform: uppercase;
+    color: rgba(255,255,255,0.25); font-weight: 400;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+
+  .ctrl-row {
+    display: flex; flex-direction: column; gap: 5px;
+  }
+  .ctrl-label {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
+    color: rgba(255,255,255,0.45);
+  }
+  .ctrl-label span {
+    font-size: 10px; letter-spacing: 1px; color: rgba(255,255,255,0.65);
+    min-width: 32px; text-align: right;
+  }
+
+  /* Custom range slider */
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 2px;
+    background: rgba(255,255,255,0.12);
+    border-radius: 2px; outline: none; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: #2ED0CD;
+    box-shadow: 0 0 6px rgba(46,208,205,0.6);
+    cursor: pointer; transition: box-shadow 0.15s;
+  }
+  input[type=range]:hover::-webkit-slider-thumb {
+    box-shadow: 0 0 12px rgba(46,208,205,0.9);
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 10px; height: 10px; border: none; border-radius: 50%;
+    background: #2ED0CD; cursor: pointer;
+  }
+
+  /* Colour swatches for palette override */
+  .swatch-row { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 2px; }
+  .swatch {
+    width: 18px; height: 18px; border-radius: 50%; cursor: pointer;
+    border: 2px solid transparent; transition: border-color 0.15s, transform 0.15s;
+    flex-shrink: 0;
+  }
+  .swatch:hover { transform: scale(1.2); }
+  .swatch.active { border-color: rgba(255,255,255,0.7); }
+
+  /* Style switcher buttons */
+  .style-btns { display: flex; gap: 6px; }
+  .style-btn {
+    flex: 1; pointer-events: all; cursor: pointer;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.10);
+    color: rgba(255,255,255,0.35);
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-size: 8px; letter-spacing: 2.5px; text-transform: uppercase;
+    padding: 8px 0; border-radius: 3px;
+    transition: all 0.18s;
+  }
+  .style-btn:hover { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.7); }
+  .style-btn.active {
+    background: rgba(46,208,205,0.18);
+    border-color: rgba(46,208,205,0.55);
+    color: #2ED0CD;
+    box-shadow: 0 0 10px rgba(46,208,205,0.15);
+  }
+
+  /* Reset button */
+  .ctrl-btn {
+    pointer-events: all; cursor: pointer;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.5);
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-size: 8px; letter-spacing: 3px; text-transform: uppercase;
+    padding: 7px 0; border-radius: 3px; width: 100%;
+    transition: background 0.15s, color 0.15s;
+  }
+  .ctrl-btn:hover { background: rgba(255,255,255,0.13); color: rgba(255,255,255,0.8); }
+</style>
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+<canvas id="fg"></canvas>
+
+<!-- ── HUD ── -->
+<div id="hud">
+  <div id="title">Aiven Platform<span>Data Signal</span></div>
+  <div id="status-dot"></div>
+  <div id="zones"></div>
+  <div id="legend">
+    <div class="lr"><div class="ld" style="background:#6F64FF"></div>PostgreSQL</div>
+    <div class="lr"><div class="ld" style="background:#2ED0CD"></div>MySQL</div>
+    <div class="lr"><div class="ld" style="background:#FF965E"></div>Kafka</div>
+    <div class="lr"><div class="ld" style="background:#59D2F4"></div>OpenSearch</div>
+    <div class="lr"><div class="ld" style="background:#5FFA74"></div>Valkey</div>
+    <div class="lr"><div class="ld" style="background:#FFE55E"></div>ClickHouse</div>
+    <div class="lr"><div class="ld" style="background:#DF56F2"></div>Grafana / Flink</div>
+  </div>
+  <div id="stats">
+    <span class="big" id="stat-rate">—</span>events / sec
+    <br><span id="stat-total">0</span> streamed
+    <br><span id="stat-dominant">—</span>
+  </div>
+</div>
+
+<!-- ── CONTROL PANEL ── -->
+<div id="ctrl-wrap">
+  <div id="ctrl-tab">Controls</div>
+  <div id="ctrl-panel">
+
+    <div class="ctrl-group">
+      <h3>Visual Style</h3>
+      <div class="style-btns">
+        <button class="style-btn active" id="btn-style-1">Flow</button>
+        <button class="style-btn"        id="btn-style-2">Grid *</button>
+        <button class="style-btn"        id="btn-style-3">Rain</button>
+      </div>
+    </div>
+
+    <div class="ctrl-group">
+      <h3>Terrain</h3>
+      <div class="ctrl-row">
+        <div class="ctrl-label">Max speed <span id="v-speed">0.8</span></div>
+        <input type="range" id="s-speed" min="0.05" max="2.5" step="0.05" value="0.8">
+      </div>
+      <div class="ctrl-row">
+        <div class="ctrl-label">Warp floor <span id="v-warp">0.45</span></div>
+        <input type="range" id="s-warp" min="0.0" max="1.0" step="0.01" value="0.45">
+      </div>
+      <div class="ctrl-row">
+        <div class="ctrl-label">Line density <span id="v-freq">20</span></div>
+        <input type="range" id="s-freq" min="2" max="60" step="1" value="20">
+      </div>
+    </div>
+
+    <div class="ctrl-group" id="ctrl-trails">
+      <h3>Trails</h3>
+      <div class="ctrl-row">
+        <div class="ctrl-label">Lifetime <span id="v-life">2.0</span></div>
+        <input type="range" id="s-life" min="0.3" max="5.0" step="0.1" value="2.0">
+      </div>
+      <div class="ctrl-row">
+        <div class="ctrl-label">Rate <span id="v-rate">2.0</span></div>
+        <input type="range" id="s-rate" min="0.5" max="6.0" step="0.25" value="2.0">
+      </div>
+      <div class="ctrl-row">
+        <div class="ctrl-label">Trail fade <span id="v-fade">0.012</span></div>
+        <input type="range" id="s-fade" min="0.002" max="0.08" step="0.002" value="0.012">
+      </div>
+      <div class="ctrl-row">
+        <div class="ctrl-label">Thickness <span id="v-thick">1.5</span></div>
+        <input type="range" id="s-thick" min="0.5" max="5.0" step="0.25" value="1.5">
+      </div>
+    </div>
+
+    <div class="ctrl-group">
+      <h3>Palette lock</h3>
+      <div class="swatch-row" id="swatch-row"></div>
+      <p style="font-size:8px;letter-spacing:1.5px;color:rgba(255,255,255,0.2);margin-top:4px;text-transform:uppercase">
+        Click to lock primary color
+      </p>
+    </div>
+
+    <div class="ctrl-group">
+      <button class="ctrl-btn" id="btn-reset">Reset defaults</button>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════ SHADERS ═══ -->
+<script id="vert-src" type="x-shader/x-vertex">
+attribute vec2 a_pos;
+void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+</script>
+
+<script id="frag-src" type="x-shader/x-fragment">
+precision highp float;
+uniform vec2  u_res;
+uniform float u_time;
+uniform vec3  u_col1;   // primary service color  — drives lit surfaces & peaks
+uniform vec3  u_col2;   // secondary service color — drives atmosphere & shadows
+uniform float u_warp;
+uniform float u_beat;
+uniform float u_error;
+uniform float u_speed;
+uniform float u_freq;   // unused in this shader, kept for API compatibility
+
+// ── Noise ────────────────────────────────────────────────────────────
+vec2 hash2(vec2 p){
+  p=vec2(dot(p,vec2(127.1,311.7)),dot(p,vec2(269.5,183.3)));
+  return fract(sin(p)*43758.5453)*2.0-1.0;
+}
+float gnoise(vec2 p){
+  vec2 i=floor(p),f=fract(p);
+  vec2 u=f*f*f*(f*(f*6.0-15.0)+10.0);
+  return mix(mix(dot(hash2(i),        f          ),
+                 dot(hash2(i+vec2(1,0)),f-vec2(1,0)),u.x),
+             mix(dot(hash2(i+vec2(0,1)),f-vec2(0,1)),
+                 dot(hash2(i+vec2(1,1)),f-vec2(1,1)),u.x),u.y);
+}
+mat2 rot2(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
+float fbm(vec2 p,int oct){
+  float v=0.0,a=0.52; mat2 R=rot2(0.42);
+  for(int i=0;i<9;i++){
+    if(i>=oct)break;
+    v+=a*gnoise(p); p=R*p*2.03+vec2(100.0); a*=0.50;
+  }
+  return v;
+}
+
+// ── Triple-domain warp — produces the large folded-fabric forms ───────
+float terrain(vec2 uv,float t,float ws){
+  // First warp pass
+  vec2 q;
+  q.x=fbm(uv              +t*0.030,4);
+  q.y=fbm(uv+vec2(5.2,1.3)+t*0.024,4);
+  // Second warp pass — warped by q
+  vec2 r;
+  r.x=fbm(uv+ws*q+vec2(1.70,9.20)+t*0.018,6);
+  r.y=fbm(uv+ws*q+vec2(8.30,2.80)+t*0.013,6);
+  // Third pass — warped by r, extra detail
+  vec2 s2;
+  s2.x=fbm(uv+ws*0.9*r+vec2(3.10,5.40)+t*0.010,5);
+  s2.y=fbm(uv+ws*0.9*r+vec2(7.60,1.90)+t*0.008,5);
+  return fbm(uv+ws*1.2*s2,9);
+}
+
+void main(){
+  vec2 uv=gl_FragCoord.xy/u_res;
+  uv.x*=u_res.x/u_res.y;
+
+  float t =u_time*u_speed;
+  // Warp strength: much stronger than before → dramatic folded shapes
+  float ws=3.2+u_warp*7.0;
+
+  float f =terrain(uv,t,ws);
+  float ft=clamp(f*0.5+0.5,0.0,1.0);
+
+  // ── Contrast curve — spread darks down, lights up ────────────────────
+  // Remaps the clustered mid-range FBM output into a full 0→1 sweep.
+  ft = clamp((ft - 0.5) * 2.6 + 0.5, 0.0, 1.0);
+  // Gamma-style lift: extra push in the shadows
+  ft = pow(ft, 0.80);
+
+  // ── 5-stop color gradient ────────────────────────────────────────────
+  // deep shadow → atmospheric blue → form → lit surface → bright peak
+  vec3 c_shadow = mix(vec3(0.01,0.01,0.03), u_col2*0.08, 0.4);
+  vec3 c_atmos  = u_col2 * 0.55;
+  vec3 c_form   = mix(u_col2, u_col1, 0.42);
+  vec3 c_lit    = u_col1 * 1.15;
+  vec3 c_peak   = mix(u_col1, vec3(0.96,0.96,1.00), 0.72);
+
+  const float s0=0.16, s1=0.36, s2=0.58, s3=0.80;
+  vec3 col;
+  if     (ft<s0) col=mix(c_shadow, c_atmos, ft/s0);
+  else if(ft<s1) col=mix(c_atmos,  c_form,  (ft-s0)/(s1-s0));
+  else if(ft<s2) col=mix(c_form,   c_lit,   (ft-s1)/(s2-s1));
+  else if(ft<s3) col=mix(c_lit,    c_peak,  (ft-s2)/(s3-s2));
+  else           col=mix(c_peak,   vec3(1.0),(ft-s3)/(1.0-s3));
+
+  // ── Beat — brief surge of brightness on event ────────────────────────
+  col += u_beat * 0.25 * c_peak * smoothstep(0.48,1.0,ft);
+
+  // ── Error wash ───────────────────────────────────────────────────────
+  vec3 errRed=vec3(0.97,0.32,0.29);
+  col=mix(col,mix(col,errRed,0.55),u_error*0.40*(1.0-smoothstep(0.0,0.38,ft)));
+
+  // ── Organic grain — sandy/dusty texture ─────────────────────────────
+  float grain=gnoise(uv*58.0+t*0.35)*0.065;
+  col=clamp(col+vec3(grain),0.0,1.0);
+
+  // ── Soft vignette ────────────────────────────────────────────────────
+  vec2 vig=(gl_FragCoord.xy/u_res)*2.0-1.0;
+  col*=1.0-smoothstep(0.42,1.55,length(vig*vec2(0.82,1.0)));
+
+  gl_FragColor=vec4(col,1.0);
+}
+</script>
+<!-- ══════════════════════════════════════════════════════════════ -->
+
+<script>
+// ═══════════════════════════════════════════════════ BRAND COLORS ═══
+const BRAND = {
+  teal:      [46,  208, 205],
+  green:     [95,  250, 116],
+  deepBlue:  [111, 100, 255],
+  lightBlue: [89,  210, 244],
+  purple:    [223,  86, 242],
+  yellow:    [255, 229,  94],
+  red:       [248,  81,  73],
+  orange:    [255, 150,  94],
+};
+
+// ── Service type signals ───────────────────────────────────────────────────────
+// Each entry is a real service being created on Aiven.
+// Color = brand identity of that technology.
+// Pair  = contrasting brand color for shader gradient.
+// Angle = directional metaphor for what the service does (radians, 0 = right).
+//
+//   pg             — rightward, steady. The evergreen database.
+//   mysql          — rightward-down. Classic, abundant.
+//   kafka          — upward. Streams rise.
+//   opensearch     — upper-right. Discovery, visibility.
+//   valkey         — left. In-memory, reflexive, fast.
+//   clickhouse     — upper-left. Analytical, columnar, ambitious.
+//   grafana        — downward-right. Observability watching below.
+//   kafka_connect  — upward-left. Bridging systems outward.
+//   flink          — straight up. Stateful streaming, kinetic.
+//   (others)       — spread across remaining directions.
+
+const SIGNAL_COLOR = {
+  pg:              BRAND.deepBlue,    // deep, reliable
+  mysql:           BRAND.teal,        // familiar, calm
+  kafka:           BRAND.orange,      // energetic, streaming
+  opensearch:      BRAND.lightBlue,   // open, searchable
+  valkey:          BRAND.green,       // fast, in-memory
+  clickhouse:      BRAND.yellow,      // analytical, bright
+  grafana:         BRAND.purple,      // observability, dramatic
+  kafka_connect:   BRAND.orange,      // connector, bridge
+  flink:           BRAND.red,         // stateful processing, intense
+  kafka_mirrormaker: BRAND.orange,    // replication
+  thanos:          BRAND.purple,      // metrics at scale
+  dragonfly:       BRAND.green,       // drop-in Redis replacement
+  vector:          BRAND.lightBlue,   // data pipeline
+  application:     BRAND.teal,
+  datahub:         BRAND.deepBlue,
+  nomadclient:     BRAND.yellow,
+  sw:              BRAND.teal,
+};
+
+const SIGNAL_PAIR = {
+  pg:              BRAND.lightBlue,
+  mysql:           BRAND.deepBlue,
+  kafka:           BRAND.yellow,
+  opensearch:      BRAND.teal,
+  valkey:          BRAND.teal,
+  clickhouse:      BRAND.orange,
+  grafana:         BRAND.deepBlue,
+  kafka_connect:   BRAND.red,
+  flink:           BRAND.orange,
+  kafka_mirrormaker: BRAND.yellow,
+  thanos:          BRAND.lightBlue,
+  dragonfly:       BRAND.deepBlue,
+  vector:          BRAND.purple,
+  application:     BRAND.green,
+  datahub:         BRAND.purple,
+  nomadclient:     BRAND.orange,
+  sw:              BRAND.green,
+};
+
+const SIGNAL_ANGLE = {
+  pg:               0.10,   // rightward — steady, dominant
+  mysql:            0.45,   // rightward-down — abundant
+  kafka:           -1.57,   // straight up — streams rise
+  opensearch:      -0.60,   // upper-right — discovery
+  valkey:           3.10,   // leftward — reflexive, fast
+  clickhouse:      -2.20,   // upper-left — analytical ambition
+  grafana:          0.80,   // downward-right — watching below
+  kafka_connect:   -2.50,   // upper-left — bridging outward
+  flink:           -1.30,   // steep upward — kinetic
+  kafka_mirrormaker:-1.80,  // upper-left — replication
+  thanos:           1.20,   // lower-right — metrics gravity
+  dragonfly:        2.80,   // leftward-down
+  vector:          -0.30,   // upper-right pipeline
+  application:      0.60,
+  datahub:          1.80,
+  nomadclient:     -0.90,
+  sw:               2.20,
+};
+// ── Per-service symbol (used in Rain style) ───────────────────────────────────
+// Each service type maps to a distinct typographic character.
+const SERVICE_SYMBOL = {
+  pg:               '*',   // evergreen
+  mysql:            '<',   // classic, leftward
+  kafka:            '{',   // open brace — stream begins
+  opensearch:       '}',   // close brace — search finds
+  valkey:           '#',   // hash — key/value
+  clickhouse:       '+',   // additive, columnar
+  grafana:          '@',   // observation, mention
+  kafka_connect:    '~',   // wave — bridging
+  flink:            '|',   // pipe — flow
+  kafka_mirrormaker:'%',   // reflection, duplication
+  thanos:           '^',   // apex — metrics ceiling
+  dragonfly:        '&',   // ampersand — fast join
+  vector:           '=',   // equality — pipeline
+  application:      '-',   // dash — neutral
+  datahub:          '?',   // discovery
+  nomadclient:      '!',   // alert
+  sw:               '/',   // slash — transient
+};
+
+function norm(rgb){ return rgb.map(v=>v/255); }
+function lerpArr(a,b,t){ return a.map((v,i)=>v+(b[i]-v)*t); }
+
+// ═══════════════════════════════════════════════════ LIVE PARAMS ═════
+// All adjustable via the control panel; sliders write directly here.
+const P = {
+  speed:      0.8,    // terrain drift speed
+  warpFloor:  0.45,   // minimum warp (ensures terrain stays complex)
+  freq:       20,     // ripple line density
+  lifeMult:   2.0,    // streak lifetime multiplier
+  rateMult:   2.0,    // spawn rate multiplier
+  fade:       0.012,  // fg canvas fade per frame (toward transparent, not black)
+  thick:      1.5,    // streak thickness multiplier
+};
+
+const DEFAULTS = { ...P };
+
+// ═══════════════════════════════════════════════════ SHADER STATE ════
+// Persistent foundation — colors accumulate from service events and
+// only drift extremely slowly back to this warm sandy baseline.
+// The terrain "remembers" the last several minutes of activity.
+const PERSIST_COL1 = norm([138, 108, 82]);   // warm sandy — lit surfaces
+const PERSIST_COL2 = norm([62,  78, 128]);   // muted blue  — atmosphere
+
+let col1    = PERSIST_COL1.slice();
+let col2    = PERSIST_COL2.slice();
+let tgtCol1 = PERSIST_COL1.slice();
+let tgtCol2 = PERSIST_COL2.slice();
+let warp    = P.warpFloor;
+let tgtWarp = P.warpFloor;
+let beat    = 0.0;
+let errorU  = 0.0;
+let lockedColor  = null;  // null = data-driven, else a fixed [r,g,b] 0-1
+let drivenSpeed  = 0.06;  // animated by event rate, ceiling = P.speed
+
+// ═══════════════════════════════════════════════════ WEBGL SETUP ═════
+const glCanvas = document.getElementById('gl');
+const gl = glCanvas.getContext('webgl',{antialias:false,alpha:false});
+
+function compileShader(type, src){
+  const s=gl.createShader(type);
+  gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))
+    console.error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog=(()=>{
+  const vs=compileShader(gl.VERTEX_SHADER,
+    document.getElementById('vert-src').textContent.trim());
+  const fs=compileShader(gl.FRAGMENT_SHADER,
+    document.getElementById('frag-src').textContent.trim());
+  const p=gl.createProgram();
+  gl.attachShader(p,vs); gl.attachShader(p,fs); gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))
+    console.error(gl.getProgramInfoLog(p));
+  return p;
+})();
+const qbuf=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,qbuf);
+gl.bufferData(gl.ARRAY_BUFFER,
+  new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);
+gl.useProgram(prog);
+const aPos=gl.getAttribLocation(prog,'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+const U={};
+['u_res','u_time','u_col1','u_col2','u_warp','u_beat','u_error','u_speed','u_freq']
+  .forEach(n=>U[n]=gl.getUniformLocation(prog,n));
+
+// ═══════════════════════════════════════════════════ 2D STREAKS ══════
+const fgCanvas=document.getElementById('fg');
+const ctx=fgCanvas.getContext('2d');
+const particles=[];
+
+const BASE_N = { single:1, low:2, medium:4, high:9, massive:20 };
+
+class Streak {
+  constructor(cx,cy,col,angle,weight){
+    this.x=cx+(Math.random()-0.5)*16;
+    this.y=cy+(Math.random()-0.5)*16;
+    const spd=0.5+weight*2.4;
+    const a=angle+(Math.random()-0.5)*0.6;
+    this.vx=Math.cos(a)*spd; this.vy=Math.sin(a)*spd;
+    this.col=col;
+    this.life=0;
+    // ← P.lifeMult applied at spawn time, not each frame
+    this.maxLife=(120+weight*160)*P.lifeMult;
+    this.size=(0.8+weight*2.8)*P.thick;
+    this.trail=[];
+    this.maxTrail=Math.round((18+weight*28)*P.lifeMult);
+    this.alive=true;
+  }
+  update(t){
+    const nx=this.x*0.004, ny=this.y*0.004;
+    const fa=Math.sin(nx*2.1+t)*Math.cos(ny*1.7+t*0.8)*Math.PI*2;
+    this.vx+=Math.cos(fa)*0.03; this.vy+=Math.sin(fa)*0.03;
+    this.vx*=0.978; this.vy*=0.978;
+    this.trail.push({x:this.x,y:this.y});
+    if(this.trail.length>this.maxTrail) this.trail.shift();
+    this.x+=this.vx; this.y+=this.vy; this.life++;
+    if(this.life>=this.maxLife||
+       this.x<-100||this.x>fgCanvas.width+100||
+       this.y<-100||this.y>fgCanvas.height+100)
+      this.alive=false;
+  }
+  draw(){
+    if(this.trail.length<2)return;
+    const[r,g,b]=this.col;
+    const env=Math.sin((this.life/this.maxLife)*Math.PI);
+    ctx.lineWidth=this.size*0.75; ctx.lineCap='round';
+    for(let i=1;i<this.trail.length;i++){
+      const t=i/this.trail.length;
+      ctx.strokeStyle=`rgba(${r},${g},${b},${env*t*t*0.62})`;
+      ctx.beginPath();
+      ctx.moveTo(this.trail[i-1].x,this.trail[i-1].y);
+      ctx.lineTo(this.trail[i  ].x,this.trail[i  ].y);
+      ctx.stroke();
+    }
+    ctx.fillStyle=`rgba(${r},${g},${b},${env*0.82})`;
+    ctx.beginPath();
+    ctx.arc(this.x,this.y,this.size*0.6,0,Math.PI*2);
+    ctx.fill();
+  }
+}
+
+// ═══════════════════════════════════════════════════ DATA STREAM ═════
+let totalEvents=0,totalErrors=0,recentEvents=[],lastStatUp=0,actionCounts={};
+const VWARP={single:0.05,low:0.18,medium:0.38,high:0.62,massive:1.0};
+
+function spawnEvent(evt){
+  const stype = evt.service_type || 'pg';
+  const col   = lockedColor ? lockedColor.map(v=>v*255) :
+                (SIGNAL_COLOR[stype] || BRAND.teal);
+  const pair  = SIGNAL_PAIR[stype]  || BRAND.lightBlue;
+  const angle = SIGNAL_ANGLE[stype] ?? 0.15;
+  const w     = evt.weight || 0.2;
+  const tier  = evt.volume_tier || 'low';
+
+  if(!lockedColor){ tgtCol1 = norm(col); tgtCol2 = norm(pair); }
+  tgtWarp = Math.max(VWARP[tier]||0.2, P.warpFloor);
+  beat    = Math.min(beat+0.3, 1.0);
+
+  if(currentStyle === 2){
+    // Style 2 — spawn a ripple at a random dot-grid position
+    spawnRipple(col);
+  } else if(currentStyle === 3){
+    // Style 3 — spawn a falling raindrop symbol
+    RAIN.drops.push(new RainDrop(stype, col));
+  }
+  // Style 1 — shader-only. Color/warp already updated above; no particles.
+
+  actionCounts[stype] = (actionCounts[stype]||0)+1;
+}
+
+function connectSSE(){
+  document.getElementById('status-dot').className='';
+  const src=new EventSource('/events');
+  src.onopen=()=>{ document.getElementById('status-dot').className='live'; };
+  src.onmessage=(msg)=>{
+    try{
+      const evt=JSON.parse(msg.data);
+      spawnEvent(evt); totalEvents++;
+      if(evt.is_error) totalErrors++;
+      const now=Date.now();
+      recentEvents.push(now);
+      recentEvents=recentEvents.filter(t=>now-t<3000);
+    }catch(e){}
+  };
+  src.onerror=()=>{
+    document.getElementById('status-dot').className='error';
+    src.close(); setTimeout(connectSSE,3000);
+  };
+}
+
+// ═══════════════════════════════════════════════════ STYLE STATE ═════
+let currentStyle = 1;  // 1 = Flow (WebGL terrain), 2 = Grid (asterisk ledger)
+
+// ═══════════════════════════════════════════════════ GRID (STYLE 2) ══
+// Dot grid: 2×2 px squares at 4 px pitch (2 px gap between dots).
+// Each service event spawns a ripple at a random grid position.
+// Ripples expand outward, coloring only the dots (not the gaps).
+// Multiple ripples overlap additively. They die when they reach the
+// farthest corner of the screen — disappearing naturally at the edges.
+//
+// Rendered via ImageData pixel buffer (one putImageData per frame):
+// — base layer built once on resize; data.set() resets it each frame
+// — ring iteration only visits grid positions within the ring band
+
+const G2_PITCH  = 8;    // px — dot center-to-center (6px dot + 2px gap)
+const G2_DOT    = 6;    // px — dot square side length
+const G2_RING_W = 10;   // px — ring half-width (smooth bell across this)
+const G2_EDGE_FADE = 220; // px — fade zone at screen edges
+const G2_MAX_RIPPLES = 50; // cap concurrent ripples under heavy traffic
+const G2_NOISE_SCALE = 1 / 52; // spatial frequency of organic warp
+const G2_NOISE_AMP   = 24;     // px — max warp displacement
+
+// ── Smooth value noise for organic ripple shaping ─────────────────────────
+// Hash two integers → pseudo-random float in [0,1]
+function g2h(x, y) {
+  let h = ((x * 1619 + y * 31337) | 0);
+  h = ((h ^ (h >>> 13)) * 1274126177) | 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 0xffffffff;
+}
+// Bilinear smooth (value) noise at continuous (x, y)
+function g2n(x, y) {
+  const x0 = x | 0, y0 = y | 0;
+  const fx = x - x0, fy = y - y0;
+  const ux = fx * fx * (3 - 2 * fx); // smoothstep
+  const uy = fy * fy * (3 - 2 * fy);
+  const a = g2h(x0,   y0),   b = g2h(x0+1, y0);
+  const c = g2h(x0,   y0+1), d = g2h(x0+1, y0+1);
+  return a + (b-a)*ux + (c-a)*uy + (a-b-c+d)*ux*uy;
+}
+
+const G2 = {
+  ripples: [],   // {cx, cy, r, g, b, born, speed, maxR}
+  imgData: null, // ImageData reused every frame (avoid GC)
+  base:    null, // Uint8ClampedArray — pre-built dot grid (reset per frame)
+};
+
+// Build base pixel buffer — called on resize (and style switch)
+function rebuildGrid(W, H) {
+  G2.imgData = new ImageData(W, H);
+  G2.base    = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) {
+    const isDotRow = (y % G2_PITCH) < G2_DOT;
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      G2.base[i + 3] = 255; // always opaque
+      if (isDotRow && (x % G2_PITCH) < G2_DOT) {
+        // Barely-visible dark dot — will light up under ripples
+        G2.base[i]     = 16;
+        G2.base[i + 1] = 16;
+        G2.base[i + 2] = 28;
+      }
+      // else: RGB = 0 (black background)
+    }
+  }
+  G2.ripples.length = 0;
+}
+
+// Spawn a ripple at a random grid-snapped position
+function spawnRipple(rgb) {
+  const W = fgCanvas.width, H = fgCanvas.height;
+  const cx = Math.floor(Math.random() * Math.floor(W / G2_PITCH)) * G2_PITCH;
+  const cy = Math.floor(Math.random() * Math.floor(H / G2_PITCH)) * G2_PITCH;
+  // maxR = distance to the farthest corner; ripple dies when it gets there
+  const maxR = Math.sqrt(Math.max(cx, W - cx) ** 2 + Math.max(cy, H - cy) ** 2);
+  G2.ripples.push({
+    cx, cy,
+    r: rgb[0], g: rgb[1], b: rgb[2],
+    born: performance.now(),
+    speed: 47 + Math.random() * 33,
+    maxR,
+  });
+  // Hard cap to keep frame time bounded under heavy traffic
+  if (G2.ripples.length > G2_MAX_RIPPLES) G2.ripples.shift();
+}
+
+function drawGrid() {
+  const W = fgCanvas.width, H = fgCanvas.height;
+  if (!G2.imgData || G2.imgData.width !== W || G2.imgData.height !== H) return;
+
+  const now  = performance.now();
+  const data = G2.imgData.data;
+
+  // ── Reset to base dot grid each frame ───────────────────────────────
+  data.set(G2.base);
+
+  // ── Paint live ripple rings into the pixel buffer ────────────────────
+  for (const rp of G2.ripples) {
+    const R = (now - rp.born) / 1000 * rp.speed;
+    if (R >= rp.maxR) continue;
+
+    const Rmin = Math.max(0, R - G2_RING_W);
+    const Rmax = R + G2_RING_W;
+    // No radius-based global fade — brightness stays constant across the screen.
+    // Ripples dissolve naturally only when their dots approach a screen edge.
+
+    // Search box extended by noise amplitude so warped dots aren't missed
+    const searchR = Rmax + G2_NOISE_AMP;
+    const xL = Math.max(0,     Math.ceil( (rp.cx - searchR) / G2_PITCH) * G2_PITCH);
+    const xR = Math.min(W - 1, Math.floor((rp.cx + searchR) / G2_PITCH) * G2_PITCH);
+    const yT = Math.max(0,     Math.ceil( (rp.cy - searchR) / G2_PITCH) * G2_PITCH);
+    const yB = Math.min(H - 1, Math.floor((rp.cy + searchR) / G2_PITCH) * G2_PITCH);
+
+    for (let gy = yT; gy <= yB; gy += G2_PITCH) {
+      for (let gx = xL; gx <= xR; gx += G2_PITCH) {
+        // ── Organic warp: displace each dot's apparent position ──────
+        // Two independent noise channels → x and y warp vectors.
+        // Low-frequency noise gives smooth blob shapes, not speckle.
+        const ns = G2_NOISE_SCALE;
+        const wx = (g2n(gx * ns,        gy * ns)        - 0.5) * 2 * G2_NOISE_AMP;
+        const wy = (g2n(gx * ns + 47.3, gy * ns + 23.1) - 0.5) * 2 * G2_NOISE_AMP;
+        const wdx = (gx + wx) - rp.cx;
+        const wdy = (gy + wy) - rp.cy;
+        const dist = Math.sqrt(wdx * wdx + wdy * wdy);
+        if (dist < Rmin || dist > Rmax) continue;
+
+        // Bell curve across ring width (peaks at ring centre)
+        const t = 1 - Math.abs(dist - R) / G2_RING_W;
+
+        // Edge-proximity fade: full brightness in the interior, smoothly fading
+        // to 0 over the outer G2_EDGE_FADE px — ripples dissolve into the frame.
+        const edgeDist = Math.min(gx, W - gx - G2_DOT, gy, H - gy - G2_DOT);
+        const ef = edgeDist <= 0 ? 0 : Math.min(edgeDist / G2_EDGE_FADE, 1.0);
+        const edgeFade = ef * ef * (3 - 2 * ef); // smoothstep — eases in and out
+
+        const a = t * t * edgeFade;  // 0–1
+
+        // Write all pixels of this 2×2 dot — additive blend, clamped
+        for (let py = 0; py < G2_DOT && gy + py < H; py++) {
+          const row = (gy + py) * W;
+          for (let px = 0; px < G2_DOT && gx + px < W; px++) {
+            const i = (row + gx + px) * 4;
+            data[i]     = Math.min(255, data[i]     + rp.r * a);
+            data[i + 1] = Math.min(255, data[i + 1] + rp.g * a);
+            data[i + 2] = Math.min(255, data[i + 2] + rp.b * a);
+          }
+        }
+      }
+    }
+  }
+
+  // ── Prune ripples that have crossed the far edge ─────────────────────
+  G2.ripples = G2.ripples.filter(
+    rp => (performance.now() - rp.born) / 1000 * rp.speed < rp.maxR
+  );
+
+  ctx.putImageData(G2.imgData, 0, 0);
+}
+
+// ═══════════════════════════════════════════════════ RAIN (STYLE 3) ══
+// Full 2-D rigid-body snow simulation.
+//
+//  • Each service event spawns one symbol falling from a random X.
+//  • Gravity + slight horizontal drift during fall.
+//  • Falling symbols collide with each other (elastic, damped).
+//  • When a symbol's speed drops below the settle threshold it becomes
+//    part of the permanent snowpack.
+//  • Settled symbols are blitted from an offscreen canvas — O(1) per
+//    frame regardless of pile size.
+//  • A spatial hash grid makes settled-collision lookup O(1).
+
+const RAIN = {
+  fontSize:    Math.round(44 * 0.70),   // 31 px
+  radius:      Math.round(44 * 0.70 * 0.50),  // collision radius ~15 px
+  gravity:     0.22,
+  restitution: 0.13,   // near-zero bounce → snow, not rubber
+  friction:    0.78,   // horizontal damping on contact
+  minSpeed:    3.5,
+  maxSpeed:    8.0,
+  settleSpeed: 0.9,    // px/frame below which a drop settles
+  drops:       [],     // active (airborne) drops
+  settled:     [],     // settled drops (physics bodies, never removed)
+  sgrid:       new Map(),
+  sgridSize:   Math.round(44 * 0.70 * 1.6),   // ≈ 1.6 × fontSize
+};
+
+// Offscreen canvas for the snowpack — drawn once per settle, blitted cheaply
+const snowCanvas = document.createElement('canvas');
+const snowCtx    = snowCanvas.getContext('2d');
+
+function resetRain() {
+  RAIN.drops.length   = 0;
+  RAIN.settled.length = 0;
+  RAIN.sgrid.clear();
+  snowCanvas.width  = fgCanvas.width;
+  snowCanvas.height = fgCanvas.height;
+  snowCtx.clearRect(0, 0, snowCanvas.width, snowCanvas.height);
+}
+
+// ── Spatial hash helpers ──────────────────────────────────────────────────────
+function sgKey(x, y) {
+  const s = RAIN.sgridSize;
+  return `${Math.floor(x/s)},${Math.floor(y/s)}`;
+}
+function sgAdd(sym) {
+  const k = sgKey(sym.x, sym.y);
+  if (!RAIN.sgrid.has(k)) RAIN.sgrid.set(k, []);
+  RAIN.sgrid.get(k).push(sym);
+}
+function sgNearby(x, y) {
+  const sz = RAIN.sgridSize;
+  const cx = Math.floor(x/sz), cy = Math.floor(y/sz);
+  const out = [];
+  for (let dx = -2; dx <= 2; dx++)
+    for (let dy = -2; dy <= 2; dy++) {
+      const a = RAIN.sgrid.get(`${cx+dx},${cy+dy}`);
+      if (a) for (const s of a) out.push(s);
+    }
+  return out;
+}
+
+// ── RainDrop ─────────────────────────────────────────────────────────────────
+class RainDrop {
+  constructor(stype, rgb) {
+    const r = RAIN.radius;
+    this.symbol  = SERVICE_SYMBOL[stype] || '*';
+    this.col     = rgb;
+    this.r       = r;
+    this.x       = r * 2 + Math.random() * (fgCanvas.width  - r * 4);
+    this.y       = -r;
+    this.vx      = (Math.random() - 0.5) * 1.2;
+    this.vy      = RAIN.minSpeed + Math.random() * (RAIN.maxSpeed - RAIN.minSpeed);
+    this.settled = false;
+  }
+
+  // Paint this symbol onto the persistent snowpack canvas
+  paintSnow() {
+    const fs = RAIN.fontSize;
+    snowCtx.font         = `300 ${fs}px "Geist Mono","Courier New",monospace`;
+    snowCtx.textAlign    = 'center';
+    snowCtx.textBaseline = 'middle';
+    const [r,g,b] = this.col;
+    snowCtx.fillStyle = `rgb(${r},${g},${b})`;
+    snowCtx.fillText(this.symbol, this.x, this.y);
+  }
+
+  settle() {
+    this.vx = 0; this.vy = 0;
+    this.settled = true;
+    RAIN.settled.push(this);
+    sgAdd(this);
+    this.paintSnow();
+  }
+
+  update() {
+    if (this.settled) return;
+    const r = this.r, W = fgCanvas.width, H = fgCanvas.height;
+
+    this.vy += RAIN.gravity;
+    let nx = this.x + this.vx;
+    let ny = this.y + this.vy;
+
+    // ── Side walls ───────────────────────────────────────────────────────
+    if (nx < r)     { nx = r;     this.vx =  Math.abs(this.vx) * 0.4; }
+    if (nx > W - r) { nx = W - r; this.vx = -Math.abs(this.vx) * 0.4; }
+
+    // ── Collide with settled snowpack ────────────────────────────────────
+    let touched = false;
+    for (const s of sgNearby(nx, ny)) {
+      const dx = nx - s.x, dy = ny - s.y;
+      const d  = Math.sqrt(dx*dx + dy*dy);
+      const md = r + s.r;
+      if (d < md && d > 0.01) {
+        const nx_ = dx/d, ny_ = dy/d;
+        // Push out of overlap
+        nx = s.x + nx_ * md * 1.005;
+        ny = s.y + ny_ * md * 1.005;
+        // Reflect & damp velocity along contact normal
+        const dot = this.vx * nx_ + this.vy * ny_;
+        if (dot < 0) {
+          this.vx = (this.vx - (1+RAIN.restitution)*dot*nx_) * RAIN.friction;
+          this.vy = (this.vy - (1+RAIN.restitution)*dot*ny_) * RAIN.friction;
+        }
+        touched = true;
+      }
+    }
+
+    // ── Floor ────────────────────────────────────────────────────────────
+    const floor = H - r;
+    if (ny >= floor) {
+      ny = floor;
+      this.vy = -Math.abs(this.vy) * RAIN.restitution;
+      this.vx *= RAIN.friction;
+      touched = true;
+    }
+
+    this.x = nx; this.y = ny;
+
+    // ── Settle when nearly still ─────────────────────────────────────────
+    if (touched) {
+      const spd = Math.sqrt(this.vx*this.vx + this.vy*this.vy);
+      if (spd < RAIN.settleSpeed) this.settle();
+    }
+  }
+}
+
+// ── Falling-vs-falling collision ──────────────────────────────────────────────
+function resolveDropCollisions() {
+  const a = RAIN.drops;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].settled) continue;
+    for (let j = i+1; j < a.length; j++) {
+      if (a[j].settled) continue;
+      const p = a[i], q = a[j];
+      const dx = q.x - p.x, dy = q.y - p.y;
+      const d  = Math.sqrt(dx*dx + dy*dy);
+      const md = p.r + q.r;
+      if (d < md && d > 0.01) {
+        const nx = dx/d, ny = dy/d;
+        const ov = (md - d) * 0.5;
+        p.x -= nx*ov; p.y -= ny*ov;
+        q.x += nx*ov; q.y += ny*ov;
+        const rv = (p.vx-q.vx)*nx + (p.vy-q.vy)*ny;
+        if (rv > 0) {
+          const imp = rv * (1+RAIN.restitution) * 0.5;
+          p.vx -= imp*nx; p.vy -= imp*ny;
+          q.vx += imp*nx; q.vy += imp*ny;
+          // Damp after collision
+          p.vx *= RAIN.friction; p.vy *= RAIN.friction;
+          q.vx *= RAIN.friction; q.vy *= RAIN.friction;
+        }
+      }
+    }
+  }
+}
+
+function drawRain() {
+  ctx.clearRect(0, 0, fgCanvas.width, fgCanvas.height);
+
+  // Blit settled snowpack — single GPU draw regardless of pile size
+  ctx.drawImage(snowCanvas, 0, 0);
+
+  // Resolve inter-drop collisions before individual updates
+  resolveDropCollisions();
+
+  // Update + draw active (airborne) drops
+  const fs = RAIN.fontSize;
+  ctx.font         = `300 ${fs}px "Geist Mono","Courier New",monospace`;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+
+  for (let i = RAIN.drops.length-1; i >= 0; i--) {
+    const d = RAIN.drops[i];
+    d.update();
+    if (d.settled) {
+      RAIN.drops.splice(i, 1);
+    } else {
+      const [r,g,b] = d.col;
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillText(d.symbol, d.x, d.y);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════ RENDER LOOP ═════
+const t0=performance.now();
+
+function resize(){
+  const W=window.innerWidth,H=window.innerHeight;
+  glCanvas.width=fgCanvas.width=W; glCanvas.height=fgCanvas.height=H;
+  gl.viewport(0,0,W,H);
+  rebuildGrid(W,H);
+  // Resize snow offscreen canvas (resets pile — acceptable on resize)
+  if(currentStyle===3) resetRain();
+  else { snowCanvas.width=W; snowCanvas.height=H; }
+}
+
+function updateStats(){
+  const now=Date.now(); if(now-lastStatUp<600)return; lastStatUp=now;
+  document.getElementById('stat-rate').textContent=(recentEvents.length/3).toFixed(1);
+  document.getElementById('stat-total').textContent=totalEvents.toLocaleString();
+  if(Object.keys(actionCounts).length>0){
+    const dom=Object.entries(actionCounts).sort((a,b)=>b[1]-a[1])[0][0];
+    document.getElementById('stat-dominant').textContent=dom;
+  }
+}
+
+function frame(){
+  const t=(performance.now()-t0)/1000;
+
+  // ── Color persistence — service colors linger for minutes, only
+  //    drifting imperceptibly back toward the warm sandy baseline. ───────
+  if(!lockedColor){
+    tgtCol1 = lerpArr(tgtCol1, PERSIST_COL1, 0.0008);
+    tgtCol2 = lerpArr(tgtCol2, PERSIST_COL2, 0.0008);
+  }
+
+  // ── Data-rate → terrain speed ──────────────────────────────────────
+  // Fast burst of services = terrain surges; silence = nearly still.
+  const dataRate  = recentEvents.length / 3;           // ev/sec (3-sec window)
+  const rateNorm  = Math.pow(Math.min(dataRate / 14, 1), 0.65);
+  const targetSpd = 0.06 + rateNorm * P.speed * 1.5;  // P.speed = ceiling
+  drivenSpeed    += (targetSpd - drivenSpeed) * 0.038;
+
+  // Smooth shared state (both styles use color + warp)
+  col1  = lerpArr(col1,  tgtCol1, 0.010);
+  col2  = lerpArr(col2,  tgtCol2, 0.016);
+  warp += (tgtWarp - warp) * 0.022;
+  tgtWarp = Math.max(tgtWarp * 0.9985, P.warpFloor);
+  beat   *= 0.93;
+  errorU *= 0.90;
+
+  if(currentStyle === 1){
+    // ── Style 1: pure WebGL terrain, no particles ──────────────────────
+    glCanvas.style.display = '';
+
+    gl.uniform2f(U.u_res,    glCanvas.width, glCanvas.height);
+    gl.uniform1f(U.u_time,   t);
+    gl.uniform3fv(U.u_col1,  col1);
+    gl.uniform3fv(U.u_col2,  col2);
+    gl.uniform1f(U.u_warp,   warp);
+    gl.uniform1f(U.u_beat,   beat);
+    gl.uniform1f(U.u_error,  errorU);
+    gl.uniform1f(U.u_speed,  drivenSpeed);
+    gl.uniform1f(U.u_freq,   P.freq);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    ctx.clearRect(0, 0, fgCanvas.width, fgCanvas.height);
+
+  } else if(currentStyle === 2){
+    // ── Style 2: persistent asterisk ledger, scrolls upward ────────────
+    glCanvas.style.display = 'none';
+    drawGrid();
+
+  } else {
+    // ── Style 3: Rain — symbols fall from top and bounce at floor ──────
+    glCanvas.style.display = 'none';
+    drawRain();
+  }
+
+  updateStats();
+  requestAnimationFrame(frame);
+}
+
+// ═══════════════════════════════════════════════════ CONTROLS ════════
+function wireSlider(id, valId, key, fmt){
+  const sl=document.getElementById(id);
+  const vl=document.getElementById(valId);
+  sl.addEventListener('input',()=>{
+    P[key]=parseFloat(sl.value);
+    vl.textContent=fmt?fmt(P[key]):P[key];
+  });
+}
+wireSlider('s-speed','v-speed','speed', v=>v.toFixed(2));
+wireSlider('s-warp', 'v-warp', 'warpFloor', v=>v.toFixed(2));
+wireSlider('s-freq', 'v-freq', 'freq', v=>Math.round(v));
+wireSlider('s-life', 'v-life', 'lifeMult', v=>v.toFixed(1));
+wireSlider('s-rate', 'v-rate', 'rateMult', v=>v.toFixed(1));
+wireSlider('s-fade', 'v-fade', 'fade', v=>v.toFixed(3));
+wireSlider('s-thick','v-thick','thick', v=>v.toFixed(1));
+
+// Palette swatches
+const swatchColors = Object.values(BRAND);
+const swatchRow=document.getElementById('swatch-row');
+swatchColors.forEach(rgb=>{
+  const hex='#'+rgb.map(v=>v.toString(16).padStart(2,'0')).join('');
+  const sw=document.createElement('div');
+  sw.className='swatch'; sw.style.background=hex;
+  sw.addEventListener('click',()=>{
+    if(sw.classList.contains('active')){
+      sw.classList.remove('active'); lockedColor=null; // back to data-driven
+    } else {
+      document.querySelectorAll('.swatch').forEach(s=>s.classList.remove('active'));
+      sw.classList.add('active');
+      lockedColor=norm(rgb);
+      tgtCol1=norm(rgb); tgtCol2=norm(rgb).map(v=>Math.min(1,v+0.15));
+    }
+  });
+  swatchRow.appendChild(sw);
+});
+
+// Reset button
+document.getElementById('btn-reset').addEventListener('click',()=>{
+  Object.assign(P,DEFAULTS);
+  ['s-speed','s-warp','s-freq','s-life','s-rate','s-fade','s-thick'].forEach(id=>{
+    const key=id.replace('s-','');
+    const pKey={speed:'speed',warp:'warpFloor',freq:'freq',
+                life:'lifeMult',rate:'rateMult',fade:'fade',thick:'thick'}[key];
+    document.getElementById(id).value=P[pKey];
+  });
+  ['v-speed','v-warp','v-freq','v-life','v-rate','v-fade','v-thick'].forEach((id,i)=>{
+    const vals=[P.speed.toFixed(2),P.warpFloor.toFixed(2),P.freq,
+                P.lifeMult.toFixed(1),P.rateMult.toFixed(1),
+                P.fade.toFixed(3), P.thick.toFixed(1)];
+    document.getElementById(id).textContent=vals[i];
+  });
+  lockedColor=null;
+  document.querySelectorAll('.swatch').forEach(s=>s.classList.remove('active'));
+});
+
+// Style switcher helpers
+function setStyleActive(n){
+  [1,2,3].forEach(i=>
+    document.getElementById(`btn-style-${i}`).classList.toggle('active', i===n));
+  document.getElementById('ctrl-trails').style.display = (n === 1) ? 'none' : '';
+}
+function clearAll(){
+  particles.length=0;
+  RAIN.drops.length=0;
+  ctx.clearRect(0,0,fgCanvas.width,fgCanvas.height);
+}
+
+document.getElementById('btn-style-1').addEventListener('click',()=>{
+  if(currentStyle===1) return;
+  currentStyle=1; setStyleActive(1); clearAll();
+});
+
+document.getElementById('btn-style-2').addEventListener('click',()=>{
+  if(currentStyle===2) return;
+  currentStyle=2; setStyleActive(2); clearAll();
+  rebuildGrid(fgCanvas.width,fgCanvas.height);
+});
+
+document.getElementById('btn-style-3').addEventListener('click',()=>{
+  if(currentStyle===3) return;
+  currentStyle=3; setStyleActive(3); clearAll();
+  resetRain();
+});
+
+// Toggle panel
+const tab=document.getElementById('ctrl-tab');
+const panel=document.getElementById('ctrl-panel');
+tab.addEventListener('click',()=>panel.classList.toggle('open'));
+
+// ═══════════════════════════════════════════════════ BOOT ════════════
+document.getElementById('ctrl-trails').style.display = 'none'; // Flow is default
+resize();
+window.addEventListener('resize',resize);
+connectSSE();
+frame();
+</script>
+</body>
+</html>

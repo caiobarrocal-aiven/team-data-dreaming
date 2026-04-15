@@ -708,10 +708,10 @@ let currentStyle = 1;  // 1 = Flow (WebGL terrain), 2 = Grid (asterisk ledger)
 // — base layer built once on resize; data.set() resets it each frame
 // — ring iteration only visits grid positions within the ring band
 
-const G2_PITCH  = 8;    // px — dot center-to-center (6px dot + 2px gap)
-const G2_DOT    = 6;    // px — dot square side length
-const G2_RING_W = 10;   // px — ring half-width (smooth bell across this)
-const G2_EDGE_FADE = 220; // px — fade zone at screen edges
+const G2_PITCH  = 12;   // px — dot center-to-center (8px dot + 4px gap)
+const G2_DOT    = 8;    // px — dot square side length
+const G2_RING_W = 12;   // px — ring half-width (scaled with dot size)
+const G2_EDGE_FADE = 28; // px — tiny edge fade so ripples travel the full screen
 const G2_MAX_RIPPLES = 50; // cap concurrent ripples under heavy traffic
 const G2_NOISE_SCALE = 1 / 52; // spatial frequency of organic warp
 const G2_NOISE_AMP   = 24;     // px — max warp displacement
@@ -772,7 +772,7 @@ function spawnRipple(rgb) {
     cx, cy,
     r: rgb[0], g: rgb[1], b: rgb[2],
     born: performance.now(),
-    speed: 47 + Math.random() * 33,
+    speed: 38 + Math.random() * 26,
     maxR,
   });
   // Hard cap to keep frame time bounded under heavy traffic
